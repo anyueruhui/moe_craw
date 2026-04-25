@@ -17,6 +17,7 @@ import requests
 BASE_URL = "https://koz.moe"
 DOWNLOAD_DIR = Path("./downloads")
 CONFIG_FILE = Path(__file__).parent / "config.json"
+STATE_FILE = Path(__file__).parent / "state.json"
 
 
 class AccountExhaustedError(Exception):
@@ -64,41 +65,28 @@ class KmoeCrawler:
         return resp
 
     def _sync_config(self):
-        """将当前 session cookie 写回 config.json 对应账号条目"""
-        if not CONFIG_FILE.exists():
-            return
-        try:
-            with open(CONFIG_FILE) as f:
-                cfg = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return
+        """将当前 session cookie 写入 state.json"""
+        state = _load_state()
+        accounts = state.setdefault("accounts", [])
+        idx = state.get("active_account", 0)
 
-        accounts = cfg.get("accounts", [])
-        idx = cfg.get("active_account", 0)
         changed = False
-
         for name in ("VOLSKEY", "VOLSESS", "VLIBSID"):
-            # 遍历避免同名 cookie 多 domain 时 CookieConflictError
             val = ""
             for c in self.session.cookies:
                 if c.name == name:
                     val = c.value
             if not val:
                 continue
-            # 多账号格式：写入 accounts[idx]
-            if accounts and idx < len(accounts):
-                key = name.lower()
-                if accounts[idx].get(key) != val:
-                    accounts[idx][key] = val
-                    changed = True
-            # 旧格式：写入顶层
-            elif cfg.get(name.lower()) != val:
-                cfg[name.lower()] = val
+            while len(accounts) <= idx:
+                accounts.append({})
+            key = name.lower()
+            if accounts[idx].get(key) != val:
+                accounts[idx][key] = val
                 changed = True
 
         if changed:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cfg, f, indent=4)
+            _save_state(state)
 
     def search(self, keyword: str) -> list[dict]:
         """搜索漫画，解析 disp_divinfo JS 数据调用"""
@@ -462,11 +450,33 @@ def security_report(crawler: KmoeCrawler, elapsed: float):
     print("=" * 60)
 
 
+# ── 状态管理 ──────────────────────────────────────────
+
+
+def _load_state() -> dict:
+    """加载运行时状态（cookies, exhausted 标记等）"""
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_state(state: dict) -> None:
+    """持久化运行时状态到 state.json"""
+    tmp = STATE_FILE.with_suffix('.tmp')
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=4)
+    tmp.replace(STATE_FILE)
+
+
 # ── 配置加载 ──────────────────────────────────────────
 
 
 def load_config() -> dict:
-    """加载配置，自动将旧格式迁移为多账号格式"""
+    """加载用户配置，不写入任何文件"""
     if not CONFIG_FILE.exists():
         return {}
 
@@ -474,31 +484,16 @@ def load_config() -> dict:
         cfg = json.load(f)
     print(f"[*] 已加载配置: {CONFIG_FILE}")
 
-    # 已有多账号格式
-    if "accounts" in cfg:
-        return cfg
-
-    # 旧格式自动迁移：顶层 email/passwd → accounts[0]
-    email = cfg.get("email", "")
-    passwd = cfg.get("passwd", "")
-    if email or passwd:
-        account = {"email": email, "passwd": passwd}
-        # 迁移已有 cookie
-        for key in ("vlibsid", "volskey", "volsess"):
-            if key in cfg:
-                account[key] = cfg.pop(key)
-        account.setdefault("exhausted", False)
-        account.setdefault("exhausted_reason", None)
-
-        cfg["accounts"] = [account]
-        cfg["active_account"] = 0
-        # 清理顶层旧字段
-        cfg.pop("email", None)
-        cfg.pop("passwd", None)
-
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cfg, f, indent=4)
-        print("[*] 已自动迁移为多账号格式")
+    # 兼容旧格式：顶层 email/passwd → accounts[0]
+    if "accounts" not in cfg:
+        email = cfg.get("email", "")
+        passwd = cfg.get("passwd", "")
+        if email or passwd:
+            account = {"email": email, "passwd": passwd}
+            cfg["accounts"] = [account]
+            cfg.pop("email", None)
+            cfg.pop("passwd", None)
+            print("[*] 已自动识别旧格式配置")
 
     return cfg
 
@@ -507,7 +502,7 @@ def load_config() -> dict:
 
 
 def login(cfg: dict, account_index: int = 0) -> dict | None:
-    """登录指定账号，返回 cookie 字典"""
+    """登录指定账号，返回 cookie 字典，状态写入 state.json"""
     accounts = cfg.get("accounts", [])
     if account_index >= len(accounts):
         return None
@@ -557,17 +552,23 @@ def login(cfg: dict, account_index: int = 0) -> dict | None:
             elif c.name == "VOLSESS": volsess = c.value
 
     if not vlibsid:
-        print(f"[!] 登录失败: {resp.text[:200]}")
+        print(f"[!] 登录失败: HTTP {resp.status_code}")
         return None
 
     print(f"[+] 登录成功: VLIBSID={vlibsid[:20]}...")
 
-    # 持久化到 accounts[account_index]
-    account["vlibsid"] = vlibsid
-    account["volskey"] = volskey or ""
-    account["volsess"] = volsess or ""
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=4)
+    # 持久化到 state.json
+    state = _load_state()
+    accs = state.setdefault("accounts", [])
+    while len(accs) <= account_index:
+        accs.append({})
+    accs[account_index].update({
+        "vlibsid": vlibsid,
+        "volskey": volskey or "",
+        "volsess": volsess or "",
+    })
+    state["active_account"] = account_index
+    _save_state(state)
 
     return {"VLIBSID": vlibsid, "VOLSKEY": volskey or "", "VOLSESS": volsess or ""}
 
@@ -578,63 +579,64 @@ def switch_account(cfg: dict, reason: str) -> dict | None:
     if not accounts:
         return None
 
-    current = cfg.get("active_account", 0)
+    state = _load_state()
+    current = state.get("active_account", 0)
 
     # 标记当前账号
-    accounts[current]["exhausted"] = True
-    accounts[current]["exhausted_reason"] = reason
+    st_accs = state.setdefault("accounts", [])
+    while len(st_accs) <= current:
+        st_accs.append({})
+    st_accs[current]["exhausted"] = True
+    st_accs[current]["exhausted_reason"] = reason
     print(f"[*] 账号[{current}] 已标记为耗尽: {reason}")
 
     # 寻找下一个未耗尽的账号（环形搜索）
     for i in range(1, len(accounts) + 1):
         next_idx = (current + i) % len(accounts)
-        if not accounts[next_idx].get("exhausted", False):
+        st_acc = st_accs[next_idx] if next_idx < len(st_accs) else {}
+        if not st_acc.get("exhausted", False):
             print(f"[*] 切换到账号[{next_idx}]: {accounts[next_idx]['email']}")
-            cfg["active_account"] = next_idx
+            state["active_account"] = next_idx
+            _save_state(state)
             cookies = login(cfg, next_idx)
             if cookies:
                 return cookies
             # 登录失败也标记为耗尽
-            accounts[next_idx]["exhausted"] = True
-            accounts[next_idx]["exhausted_reason"] = "login failed"
+            while len(st_accs) <= next_idx:
+                st_accs.append({})
+            st_accs[next_idx]["exhausted"] = True
+            st_accs[next_idx]["exhausted_reason"] = "login failed"
 
+    _save_state(state)
     print("[!] 没有可用的账号了")
     return None
 
 
-def reset_accounts(cfg: dict):
+def reset_accounts():
     """重置所有账号的耗尽标记（每次新下载会话开始时调用）"""
-    accounts = cfg.get("accounts", [])
+    state = _load_state()
     changed = False
-    for acc in accounts:
+    for acc in state.get("accounts", []):
         if acc.get("exhausted", False):
             acc["exhausted"] = False
             acc["exhausted_reason"] = None
             changed = True
     if changed:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cfg, f, indent=4)
+        _save_state(state)
 
 
-def _get_active_cookies(cfg: dict) -> dict | None:
-    """从 config 中获取当前活跃账号的 cookies"""
-    accounts = cfg.get("accounts", [])
-    # 新格式：accounts 非空时只从中读取，不 fallback 旧格式
-    if accounts:
-        idx = min(cfg.get("active_account", 0), len(accounts) - 1)
-        acc = accounts[idx]
+def _get_active_cookies() -> dict | None:
+    """从 state.json 中获取当前活跃账号的 cookies"""
+    state = _load_state()
+    accs = state.get("accounts", [])
+    idx = state.get("active_account", 0)
+    if accs and idx < len(accs):
+        acc = accs[idx]
         vlibsid = acc.get("vlibsid", "")
         volskey = acc.get("volskey", "")
         volsess = acc.get("volsess", "")
         if all([vlibsid, volskey, volsess]):
             return {"VLIBSID": vlibsid, "VOLSKEY": volskey, "VOLSESS": volsess}
-        return None
-    # 旧格式：从顶层读取
-    vlibsid = cfg.get("vlibsid", "")
-    volskey = cfg.get("volskey", "")
-    volsess = cfg.get("volsess", "")
-    if all([vlibsid, volskey, volsess]):
-        return {"VLIBSID": vlibsid, "VOLSKEY": volskey, "VOLSESS": volsess}
     return None
 
 
@@ -643,14 +645,14 @@ def _get_active_cookies(cfg: dict) -> dict | None:
 
 def main():
     cfg = load_config()
-    reset_accounts(cfg)
+    reset_accounts()
 
     parser = argparse.ArgumentParser(
         description="Kmoe 站点安全测试 - 多账号自动轮换"
     )
-    parser.add_argument("--cookie-vlibsid", default=cfg.get("vlibsid"))
-    parser.add_argument("--cookie-volskey", default=cfg.get("volskey"))
-    parser.add_argument("--cookie-volsess", default=cfg.get("volsess"))
+    parser.add_argument("--cookie-vlibsid")
+    parser.add_argument("--cookie-volskey")
+    parser.add_argument("--cookie-volsess")
     parser.add_argument("--search", "-s", help="搜索关键词")
     parser.add_argument("--book-url", help="漫画详情页 URL")
     parser.add_argument("--download", "-d", action="store_true", help="执行下载")
@@ -663,18 +665,18 @@ def main():
     parser.add_argument("--login", action="store_true", help="强制重新登录")
     args = parser.parse_args()
 
-    # 获取 cookies：CLI 参数 > config 活跃账号 > 自动登录
+    # 获取 cookies：CLI 参数 > state.json > 自动登录
     vlibsid = args.cookie_vlibsid
     volskey = args.cookie_volskey
     volsess = args.cookie_volsess
 
     if not all([vlibsid, volskey, volsess]):
-        active = _get_active_cookies(cfg)
+        active = _get_active_cookies()
         if active:
             vlibsid, volskey, volsess = active["VLIBSID"], active["VOLSKEY"], active["VOLSESS"]
 
     if args.login or not all([vlibsid, volskey, volsess]):
-        idx = cfg.get("active_account", 0)
+        idx = _load_state().get("active_account", 0)
         auto_cookies = login(cfg, idx)
         if auto_cookies:
             vlibsid, volskey, volsess = auto_cookies["VLIBSID"], auto_cookies["VOLSKEY"], auto_cookies["VOLSESS"]

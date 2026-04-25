@@ -1,4 +1,5 @@
 config.json
+state.json
 downloads/
 .venv/
 __pycache__/
