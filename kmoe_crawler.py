@@ -697,6 +697,12 @@ def main():
                 "或手动填写 cookie。"
             )
 
+    # 显示当前使用的账号
+    active_idx = _load_state().get("active_account", 0)
+    accounts = cfg.get("accounts", [])
+    if accounts and active_idx < len(accounts):
+        print(f"[*] 当前账号: {accounts[active_idx]['email']}")
+
     cookies = {"VLIBSID": vlibsid, "VOLSKEY": volskey, "VOLSESS": volsess}
     file_type = 1 if args.type == "mobi" else 2
     crawler = KmoeCrawler(cookies, delay=args.delay, cfg=cfg)

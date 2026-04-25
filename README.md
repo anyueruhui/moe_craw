@@ -1,176 +1,164 @@
-# Kmoe 安全测试脚本
+# Kmoe Crawler
 
-## 快速开始（Skill 模式）
+从 [koz.moe](https://koz.moe) 批量下载漫画（epub/mobi 格式），支持多账号自动轮换。
 
-已封装为 Claude Code Skill，直接用自然语言对话即可：
+## 功能
 
-```
-给我下载《烙印战士》
-给我下载《烙印战士》第5卷
-下载《进击的巨人》第1到10卷，epub格式
-```
+- 搜索漫画并批量下载
+- 优先 epub 格式，无 epub 时自动回退 mobi
+- 多账号轮换：某账号额度耗尽或 403 时自动切换下一个
+- 自动登录：只需配置邮箱密码，脚本自动获取 session
+- 运行时状态与配置分离（`config.json` / `state.json`）
+- 文件名格式：`漫画名_卷名.ext`
 
-Skill 会自动搜索、优先中文版、多结果时让你选择、确认后下载到 `~/Downloads`。
-
-## 手动使用
-
-### 环境准备
+## 快速开始
 
 ```bash
-# 创建虚拟环境并安装依赖
+# 克隆仓库
+git clone https://github.com/YOUR_USERNAME/moe_craw.git
+cd moe_craw
+
+# 创建虚拟环境
 uv venv .venv
-source .venv/bin/activate
-uv pip install requests beautifulsoup4
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
+
+# 配置账号
+cp config.example.json config.json
+# 编辑 config.json，填入你的 koz.moe 账号
+
+# 下载漫画
+python kmoe_crawler.py -s "烙印战士" -d
 ```
-
-## 获取 Cookie
-
-在浏览器中登录 koz.moe，打开开发者工具 (F12) -> Network -> 随便点击一个请求 -> 复制以下三个 cookie 的值：
-
-| Cookie 名 | 说明 |
-|-----------|------|
-| `VLIBSID` | Session ID |
-| `VOLSKEY` | 签名密钥 |
-| `VOLSESS` | Session 版本号 |
-
-## 使用方式
-
-### 1. 仅搜索（不下载）
-
-```bash
-python kmoe_crawler.py \
-  --cookie-vlibsid "YOUR_VLIBSID" \
-  --cookie-volskey "YOUR_VOLSKEY" \
-  --cookie-volsess "YOUR_VOLSESS" \
-  -s "漫画名称"
-```
-
-输出搜索结果列表及每个漫画的详情页 URL。
-
-### 2. 搜索 + 下载第一个结果
-
-```bash
-python kmoe_crawler.py \
-  --cookie-vlibsid "YOUR_VLIBSID" \
-  --cookie-volskey "YOUR_VOLSKEY" \
-  --cookie-volsess "YOUR_VOLSESS" \
-  -s "烙印战士" -d
-```
-
-### 3. 搜索 + 下载全部结果
-
-```bash
-python kmoe_crawler.py \
-  --cookie-vlibsid "YOUR_VLIBSID" \
-  --cookie-volskey "YOUR_VOLSKEY" \
-  --cookie-volsess "YOUR_VOLSESS" \
-  -s "烙印战士" --download-all
-```
-
-### 4. 指定漫画 URL 直接下载
-
-```bash
-python kmoe_crawler.py \
-  --cookie-vlibsid "YOUR_VLIBSID" \
-  --cookie-volskey "YOUR_VOLSKEY" \
-  --cookie-volsess "YOUR_VOLSESS" \
-  --book-url "https://koz.moe/c/50075.htm"
-```
-
-### 5. 下载 epub 格式
-
-```bash
-python kmoe_crawler.py \
-  --cookie-vlibsid "YOUR_VLIBSID" \
-  --cookie-volskey "YOUR_VOLSKEY" \
-  --cookie-volsess "YOUR_VOLSESS" \
-  --book-url "https://koz.moe/c/50075.htm" \
-  --type epub
-```
-
-### 6. 只下载部分卷
-
-```bash
-# 从第 5 卷开始，最多下载 3 卷
-python kmoe_crawler.py \
-  --cookie-vlibsid "YOUR_VLIBSID" \
-  --cookie-volskey "YOUR_VOLSKEY" \
-  --cookie-volsess "YOUR_VOLSESS" \
-  --book-url "https://koz.moe/c/50075.htm" \
-  --start 4 --max 3
-```
-
-### 7. 调整请求间隔
-
-```bash
-# 0.3 秒间隔（更快，但更容易触发风控）
-python kmoe_crawler.py \
-  --cookie-vlibsid "YOUR_VLIBSID" \
-  --cookie-volskey "YOUR_VOLSKEY" \
-  --cookie-volsess "YOUR_VOLSESS" \
-  -s "漫画" -d --delay 0.3
-```
-
-## 全部参数
-
-| 参数 | 缩写 | 必填 | 说明 |
-|------|------|------|------|
-| `--cookie-vlibsid` | | 是 | VLIBSID cookie 值 |
-| `--cookie-volskey` | | 是 | VOLSKEY cookie 值 |
-| `--cookie-volsess` | | 是 | VOLSESS cookie 值 |
-| `--search` | `-s` | 否 | 搜索关键词 |
-| `--book-url` | | 否 | 直接指定漫画详情页 URL |
-| `--download` | `-d` | 否 | 搜索时下载第一个结果 |
-| `--download-all` | | 否 | 搜索时下载全部结果 |
-| `--type` | | 否 | 文件格式: `mobi`(默认) 或 `epub` |
-| `--start` | | 否 | 从第 N 卷开始（从 0 计数，默认 0） |
-| `--max` | | 否 | 最多下载 N 卷（0=全部，默认 0） |
-| `--delay` | | 否 | 请求间隔秒数（默认 1.0） |
-| `--output` | `-o` | 否 | 下载保存目录（默认 `./downloads`） |
-
-`--search` 和 `--book-url` 二选一，不能同时省略。
-
-## 输出结构
-
-```
-downloads/
-└── 漫画名称/
-    ├── 卷 01.mobi
-    ├── 卷 02.mobi
-    ├── ...
-    └── 卷 N.mobi
-```
-
-## 安全测试报告
-
-脚本运行完成后会自动输出安全分析报告，包含：
-
-- 总请求数和耗时统计
-- 发现的安全漏洞（captcha 绕过、频率限制缺失等）
-- CDN 签名 URL 分析
-- Session cookie 安全性评估
-- 修复建议
-
-## 注意事项
-
-- Cookie 有效期有限，过期后需重新登录获取
-- 下载文件会占用账号额度（quota），注意余额
-- `--delay` 建议不低于 0.5 秒，过快可能触发风控
-- Cookie 泄露后他人可冒用你的账号，注意保密
 
 ## 配置文件
 
-在脚本同目录下创建 `config.json` 可预设所有参数，CLI 参数会覆盖配置：
+### config.json — 用户设定（只读，不会被脚本修改）
 
 ```json
 {
-    "vlibsid": "YOUR_VLIBSID",
-    "volskey": "YOUR_VOLSKEY",
-    "volsess": "YOUR_VOLSESS",
-    "type": "mobi",
+    "accounts": [
+        {"email": "user1@example.com", "passwd": "password1"},
+        {"email": "user2@example.com", "passwd": "password2"}
+    ],
+    "type": "epub",
     "delay": 1.0,
-    "output": "./downloads"
+    "output": "~/Downloads"
 }
 ```
 
-配置后可省略所有 cookie 参数：`python kmoe_crawler.py -s "漫画名" -d`
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `accounts` | 账号列表，支持多个 | 必填 |
+| `accounts[].email` | koz.moe 登录邮箱 | 必填 |
+| `accounts[].passwd` | koz.moe 登录密码 | 必填 |
+| `type` | 下载格式：`epub` 或 `mobi` | `epub` |
+| `delay` | 请求间隔（秒） | `1.0` |
+| `output` | 下载目录 | `~/Downloads` |
+
+### state.json — 运行时状态（自动管理，可随时删除）
+
+脚本自动维护，存储 session cookie、活跃账号索引、账号耗尽标记等。删除后下次运行会自动重新登录。
+
+## 使用方式
+
+### 命令行
+
+```bash
+# 搜索
+python kmoe_crawler.py -s "一拳超人"
+
+# 搜索并下载第一个结果
+python kmoe_crawler.py -s "一拳超人" -d
+
+# 下载指定 URL 的漫画
+python kmoe_crawler.py --book-url "https://koz.moe/c/11842.htm"
+
+# 只下载最新一卷（先看总卷数，再用 --start）
+python kmoe_crawler.py --book-url "https://koz.moe/c/11842.htm" --start 15 --max 1
+
+# 下载前 5 卷
+python kmoe_crawler.py -s "烙印战士" -d --max 5
+
+# 强制重新登录
+python kmoe_crawler.py -s "漫画" -d --login
+
+# mobi 格式
+python kmoe_crawler.py -s "漫画" -d --type mobi
+
+# 自定义下载目录
+python kmoe_crawler.py -s "漫画" -d -o ~/Documents/manga
+```
+
+### 全部参数
+
+| 参数 | 缩写 | 说明 |
+|------|------|------|
+| `--search` | `-s` | 搜索关键词 |
+| `--book-url` | | 漫画详情页 URL |
+| `--download` | `-d` | 下载搜索结果的第一个 |
+| `--download-all` | | 下载搜索到的全部漫画 |
+| `--type` | | 格式：`epub`（默认）或 `mobi` |
+| `--start` | | 从第 N 卷开始（0-based） |
+| `--max` | | 最多下载 N 卷（0=全部） |
+| `--delay` | | 请求间隔秒数（默认 1.0） |
+| `--output` | `-o` | 下载保存目录 |
+| `--login` | | 强制重新登录 |
+
+`--search` 和 `--book-url` 二选一。
+
+## Claude Code Skill 集成
+
+本项目附带一个 Claude Code Skill，可以用自然语言下载漫画。
+
+### 安装
+
+```bash
+# 复制 skill 到 Claude 配置目录
+cp SKILL.md ~/.claude/skills/kmoe-download/SKILL.md
+```
+
+### 使用
+
+在 Claude Code 中直接说：
+
+```
+给我下载《烙印战士》第5卷
+下载一拳超人最新的5卷
+下载《葬送的芙莉莲》全部
+```
+
+Skill 会自动：搜索 → 筛选中文版优先 → 多结果让你选择 → 确认范围 → 执行下载 → 报告结果。
+
+## 多账号轮换
+
+当某个账号遇到以下情况时，自动切换到下一个账号重试：
+- 403 错误（session 过期或权限不足）
+- 额度耗尽
+- 登录失败
+
+所有账号耗尽时停止下载，下次运行时自动重置状态。
+
+## 项目结构
+
+```
+moe_craw/
+├── kmoe_crawler.py      # 主脚本
+├── config.example.json   # 配置示例
+├── config.json           # 用户配置（gitignore，不提交）
+├── state.json            # 运行时状态（gitignore，自动管理）
+├── SKILL.md              # Claude Code Skill 定义
+├── requirements.txt      # Python 依赖
+└── .gitignore
+```
+
+## 注意事项
+
+- 请使用自己注册的账号，遵守站点的使用条款
+- 下载文件会消耗账号额度
+- `--delay` 建议不低于 0.5 秒
+- `config.json` 包含明文密码，不要提交到公开仓库
+
+## License
+
+MIT
