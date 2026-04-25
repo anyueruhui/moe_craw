@@ -261,7 +261,7 @@ class KmoeCrawler:
 
         if data.get("code") != 200:
             msg = data.get("msg", "")
-            if any(kw in msg for kw in ("额度", "權限", "limit", "quota", "等級", "验证")):
+            if any(kw in msg for kw in ("额度", "額度", "權限", "limit", "quota", "等級", "验证")):
                 raise AccountExhaustedError(f"getdownurl: {msg}")
             print(f"[!] getdownurl 错误: {msg}")
             return None
