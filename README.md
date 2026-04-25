@@ -15,7 +15,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/YOUR_USERNAME/moe_craw.git
+git clone https://github.com/anyueruhui/moe_craw.git
 cd moe_craw
 
 # 创建虚拟环境
