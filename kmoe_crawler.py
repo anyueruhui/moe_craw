@@ -15,7 +15,7 @@ import requests
 
 
 BASE_URL = "https://koz.moe"
-DOWNLOAD_DIR = Path("./downloads")
+DOWNLOAD_DIR = Path("~/Downloads").expanduser()
 CONFIG_FILE = Path(__file__).parent / "config.json"
 STATE_FILE = Path(__file__).parent / "state.json"
 
@@ -709,7 +709,7 @@ def main():
                 print(f"\n{'─' * 50}")
                 crawler.batch_download_book(
                     r["book_url"],
-                    save_dir=Path(args.output),
+                    save_dir=Path(args.output).expanduser(),
                     file_type=file_type,
                     start_vol=args.start,
                     max_vols=args.max,
@@ -717,7 +717,7 @@ def main():
         elif args.download and results:
             crawler.batch_download_book(
                 results[0]["book_url"],
-                save_dir=Path(args.output),
+                save_dir=Path(args.output).expanduser(),
                 file_type=file_type,
                 start_vol=args.start,
                 max_vols=args.max,
@@ -730,7 +730,7 @@ def main():
     elif args.book_url:
         crawler.batch_download_book(
             args.book_url,
-            save_dir=Path(args.output),
+            save_dir=Path(args.output).expanduser(),
             file_type=file_type,
             start_vol=args.start,
             max_vols=args.max,

@@ -11,5 +11,5 @@
     ],
     "type": "epub",
     "delay": 1.0,
-    "output": "./downloads"
+    "output": "~/Downloads"
 }
