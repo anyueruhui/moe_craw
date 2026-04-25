@@ -734,13 +734,29 @@ def main():
                 print(f"    {r['book_url']}")
 
     elif args.book_url:
-        crawler.batch_download_book(
-            args.book_url,
-            save_dir=Path(args.output).expanduser(),
-            file_type=file_type,
-            start_vol=args.start,
-            max_vols=args.max,
-        )
+        if args.download:
+            crawler.batch_download_book(
+                args.book_url,
+                save_dir=Path(args.output).expanduser(),
+                file_type=file_type,
+                start_vol=args.start,
+                max_vols=args.max,
+            )
+        else:
+            detail = crawler.get_book_detail(args.book_url)
+            if detail and detail["data_hash"]:
+                volumes = crawler.get_volumes(detail["data_hash"])
+                if volumes:
+                    print(f"\n  添加 -d 下载此漫画")
+                    print(f"    共 {len(volumes)} 卷")
+                    for i, v in enumerate(volumes):
+                        pages = v.get("pages", "?")
+                        size = v.get("size_mobi", "?")
+                        print(f"    卷 {i+1:02d} ({pages}p, {size}MB)")
+                else:
+                    print("[!] 无卷数据")
+            else:
+                print("[!] 无法获取漫画信息")
     else:
         parser.print_help()
         return

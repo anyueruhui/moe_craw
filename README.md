@@ -72,10 +72,13 @@ python kmoe_crawler.py -s "一拳超人"
 python kmoe_crawler.py -s "一拳超人" -d
 
 # 下载指定 URL 的漫画
+python kmoe_crawler.py --book-url "https://koz.moe/c/11842.htm" -d
+
+# 仅查看某本漫画的卷列表（不下载）
 python kmoe_crawler.py --book-url "https://koz.moe/c/11842.htm"
 
-# 只下载最新一卷（先看总卷数，再用 --start）
-python kmoe_crawler.py --book-url "https://koz.moe/c/11842.htm" --start 15 --max 1
+# 只下载最新一卷（先查看卷列表确认总数，再加 -d 和 --start 下载）
+python kmoe_crawler.py --book-url "https://koz.moe/c/11842.htm" --start 15 --max 1 -d
 
 # 下载前 5 卷
 python kmoe_crawler.py -s "烙印战士" -d --max 5

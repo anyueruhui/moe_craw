@@ -27,14 +27,15 @@ digraph kmoe {
     decide [label="4. 唯一匹配？" shape=diamond];
     clarify [label="5. 列出候选让用户选择"];
     confirm [label="6. 确认下载范围"];
-    download [label="7. 执行下载"];
-    done [label="8. 报告结果"];
+    info [label="7. 查看卷列表信息"];
+    download [label="8. 执行下载（需 -d）"];
+    done [label="9. 报告结果"];
 
     parse -> search -> filter -> decide;
     decide -> clarify [label="多个结果"];
     decide -> confirm [label="唯一结果"];
     clarify -> confirm;
-    confirm -> download -> done;
+    confirm -> info -> download -> done;
 }
 ```
 
@@ -96,18 +97,30 @@ python3 $MOE_CRAW_DIR/kmoe_crawler.py -s "漫画名"
 请输入编号（默认 1）：
 ```
 
-### 5. 执行下载
+### 5. 查看信息（先确认卷数再下载）
+
+```bash
+source $MOE_CRAW_DIR/.venv/bin/activate
+python3 $MOE_CRAW_DIR/kmoe_crawler.py --book-url "BOOK_URL"
+```
+
+此命令仅展示书籍信息和卷列表，**不会触发下载**。用于确认总卷数和卷名后再决定下载范围。
+
+> **重要**：`--book-url` 必须配合 `-d` 才会执行下载，单独使用仅为信息查看模式。
+
+### 6. 执行下载
 
 ```bash
 source $MOE_CRAW_DIR/.venv/bin/activate
 python3 $MOE_CRAW_DIR/kmoe_crawler.py \
   --book-url "BOOK_URL" \
+  -d \
   --type epub \
   --start START --max MAX \
   --delay 0.8
 ```
 
-### 6. 报告结果
+### 7. 报告结果
 
 下载完成后输出：
 ```
