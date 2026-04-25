@@ -1,0 +1,15 @@
+{
+    "accounts": [
+        {
+            "email": "user1@example.com",
+            "passwd": "password1"
+        },
+        {
+            "email": "user2@example.com",
+            "passwd": "password2"
+        }
+    ],
+    "type": "epub",
+    "delay": 1.0,
+    "output": "./downloads"
+}
