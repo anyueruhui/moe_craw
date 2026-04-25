@@ -114,7 +114,14 @@ python kmoe_crawler.py -s "漫画" -d -o ~/Documents/manga
 ### 安装
 
 ```bash
-# 复制 skill 到 Claude 配置目录
+# 1. 设置环境变量（加到 ~/.zshrc 或 ~/.bashrc 中）
+echo 'export MOE_CRAW_DIR="$(cd "$(dirname "$0")" && pwd)"' >> ~/.zshrc
+# 或者手动指定绝对路径：
+echo 'export MOE_CRAW_DIR="/path/to/moe_craw"' >> ~/.zshrc
+source ~/.zshrc
+
+# 2. 复制 skill 到 Claude Code 配置目录
+mkdir -p ~/.claude/skills/kmoe-download
 cp SKILL.md ~/.claude/skills/kmoe-download/SKILL.md
 ```
 

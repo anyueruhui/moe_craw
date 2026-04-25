@@ -59,10 +59,11 @@ digraph kmoe {
 ### 2. 搜索
 
 ```bash
-cd /path/to/moe_craw
-source .venv/bin/activate
-python3 kmoe_crawler.py -s "漫画名"
+source $MOE_CRAW_DIR/.venv/bin/activate
+python3 $MOE_CRAW_DIR/kmoe_crawler.py -s "漫画名"
 ```
+
+`$MOE_CRAW_DIR` 是仓库根目录的绝对路径，用户需在 shell 配置中设置（见 README）。
 
 脚本自动读取 config.json 中的账号密码并登录，无需手动传 cookie。
 
@@ -98,8 +99,8 @@ python3 kmoe_crawler.py -s "漫画名"
 ### 5. 执行下载
 
 ```bash
-source .venv/bin/activate
-python3 kmoe_crawler.py \
+source $MOE_CRAW_DIR/.venv/bin/activate
+python3 $MOE_CRAW_DIR/kmoe_crawler.py \
   --book-url "BOOK_URL" \
   --type epub \
   --start START --max MAX \
