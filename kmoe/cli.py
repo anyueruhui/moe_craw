@@ -21,7 +21,7 @@ def main() -> None:
     cookies = _resolve_cookies(args, mgr, parser)
     file_type = 1 if args.type == "mobi" else 2
 
-    with KmoeCrawler(cookies, delay=args.delay, account_manager=mgr) as crawler:
+    with KmoeCrawler(cookies, delay=args.delay, account_manager=mgr, workers=args.workers) as crawler:
         start_time = time.time()
         _dispatch(args, crawler, file_type)
         elapsed = time.time() - start_time
@@ -45,6 +45,7 @@ def _build_parser(cfg: dict) -> argparse.ArgumentParser:
     parser.add_argument("--delay", type=float, default=cfg.get("delay", 1.0), help="请求间隔(秒)")
     parser.add_argument("--output", "-o", default=cfg.get("output", DEFAULT_OUTPUT))
     parser.add_argument("--login", action="store_true", help="强制重新登录")
+    parser.add_argument("--workers", type=int, default=20, help="分块下载线程数 (1=单线程)")
     return parser
 
 

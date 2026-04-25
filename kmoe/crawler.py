@@ -1,7 +1,9 @@
 """核心爬虫逻辑：搜索、详情、下载"""
 
+import concurrent.futures
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote
@@ -22,12 +24,35 @@ class AccountExhaustedError(Exception):
     """账号额度耗尽或 session 失效，需要切换账号"""
 
 
+class _ProgressTracker:
+    """Thread-safe progress tracker for multi-chunk downloads"""
+
+    def __init__(self, total_size: int, filename: str):
+        self.total_size = total_size
+        self.filename = filename
+        self._downloaded = 0
+        self._lock = threading.Lock()
+        self._last_print = time.monotonic()
+
+    def add(self, nbytes: int) -> None:
+        with self._lock:
+            self._downloaded += nbytes
+            now = time.monotonic()
+            if now - self._last_print >= 3.0:
+                dl_mb = self._downloaded / 1024 / 1024
+                total_mb = self.total_size / 1024 / 1024
+                pct = self._downloaded * 100 // self.total_size if self.total_size > 0 else 0
+                print(f"  [↓] {self.filename}: {pct}% ({dl_mb:.1f}/{total_mb:.1f} MB)")
+                self._last_print = now
+
+
 class KmoeCrawler:
     def __init__(
         self,
         cookies: dict,
         delay: float = 1.0,
         account_manager: AccountManager | None = None,
+        workers: int = 1,
     ):
         self.session = requests.Session()
         self.session.cookies.update(cookies)
@@ -45,6 +70,7 @@ class KmoeCrawler:
         self._account_manager = account_manager
         self.request_count = 0
         self.security_notes: list[str] = []
+        self.workers = workers
 
     def __enter__(self):
         return self
@@ -253,9 +279,35 @@ class KmoeCrawler:
     # ── 文件下载 ──────────────────────────────────────
 
     def download_file(
+        self, url: str, save_dir: Path, filename: str | None = None,
+        backup_url: str | None = None,
+    ) -> Path | None:
+        """从 CDN 下载文件，workers > 1 时尝试多线程分块下载
+
+        backup_url: 备用 CDN URL（支持 Range），用于分块下载
+        """
+        if self.workers > 1:
+            # 优先使用备用 CDN（支持 Range）做分块下载
+            chunked_url = backup_url or url
+            result = self._try_chunked_download(
+                chunked_url, save_dir, filename, main_cdn_url=url,
+            )
+            if result is not None:
+                return result
+            if backup_url:
+                # 备用 CDN 分块下载失败，尝试主 CDN
+                print("[*] 备用 CDN 分块下载失败，尝试主 CDN")
+                result = self._try_chunked_download(url, save_dir, filename)
+                if result is not None:
+                    return result
+            print("[*] 分块下载不可用，回退单线程")
+
+        return self._single_download(url, save_dir, filename)
+
+    def _single_download(
         self, url: str, save_dir: Path, filename: str | None = None
     ) -> Path | None:
-        """从 CDN 下载文件，带进度条和原子写入"""
+        """单线程下载，带进度条和原子写入"""
         self.request_count += 1
         resp = self.session.get(url, stream=True, timeout=self.timeout)
 
@@ -301,6 +353,193 @@ class KmoeCrawler:
         print(f"[+] 已下载: {filename} ({size_mb:.1f} MB)")
         return filepath
 
+    def _try_chunked_download(
+        self, url: str, save_dir: Path, filename: str | None,
+        main_cdn_url: str | None = None,
+    ) -> Path | None:
+        """尝试多线程分块下载，验证 CDN 真正支持 Range"""
+        # 探测：用小 Range 请求检测支持
+        try:
+            probe = requests.get(
+                url,
+                headers={"User-Agent": _UA, "Range": "bytes=0-1023"},
+                timeout=self.timeout,
+                allow_redirects=True,
+            )
+        except requests.RequestException:
+            return None
+
+        if probe.status_code != 206:
+            return None
+
+        # 验证 probe 的 Content-Length 确实是 1024
+        probe_cl = int(probe.headers.get("content-length", 0))
+        if probe_cl != 1024:
+            return None
+
+        # 从 Content-Range 提取总大小
+        cr = probe.headers.get("content-range", "")
+        total_match = re.search(r"/(\d+)$", cr)
+        if not total_match:
+            return None
+        total_size = int(total_match.group(1))
+        if total_size < 1024 * 1024:
+            return None
+
+        if not filename:
+            filename = _extract_filename(probe, url)
+        filename = re.sub(r'[\\/:*?"<>|]', '_', filename)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        filepath = save_dir / filename
+
+        return self._chunked_download(url, filepath, total_size, filename, main_cdn_url)
+
+    def _chunked_download(
+        self, url: str, filepath: Path, total_size: int, filename: str,
+        main_cdn_url: str | None = None,
+    ) -> Path | None:
+        """多线程分块下载，每个分块 5MB，带重试和断点续传
+
+        如果部分分块失败且有 main_cdn_url，用主 CDN 单线程补齐缺失分块。
+        """
+        tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+        # 使用 5MB 小分块，提高不稳定 CDN 的成功率
+        chunk_size = 5 * 1024 * 1024
+        num_chunks = (total_size + chunk_size - 1) // chunk_size
+        tracker = _ProgressTracker(total_size, filename)
+        total_mb = total_size / 1024 / 1024
+        print(f"  [↓] {filename}: 分块下载 ({self.workers} 线程, {num_chunks} 块, {total_mb:.1f} MB)")
+
+        part_files: list[Path] = []
+        failed_ranges: list[tuple[int, int, int]] = []  # (chunk_idx, start, end)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.workers) as pool:
+            futures = {}
+            for i in range(num_chunks):
+                start = i * chunk_size
+                end = min(start + chunk_size - 1, total_size - 1)
+                part_file = tmp_path.with_suffix(f".part{i}")
+                part_files.append(part_file)
+                f = pool.submit(self._download_range, url, start, end, part_file, tracker)
+                futures[f] = (i, start, end)
+
+            for f in concurrent.futures.as_completed(futures):
+                i, start, end = futures[f]
+                if not f.result():
+                    failed_ranges.append((i, start, end))
+
+        # 如果有失败的分块且有主 CDN URL，尝试用主 CDN 补齐
+        if failed_ranges and main_cdn_url:
+            print(f"  [↻] {len(failed_ranges)}/{num_chunks} 分块失败，用主 CDN 补齐...")
+            fallback_ok = True
+            for i, start, end in sorted(failed_ranges):
+                expected_size = end - start + 1
+                part_file = part_files[i]
+                # 主 CDN 不支持 Range，需要下载完整文件再截取
+                # 更好的方案：直接用主 CDN 单线程下载整个文件
+                fallback_ok = False
+                break
+
+            if not fallback_ok:
+                # 用主 CDN 单线程下载整个文件
+                print(f"  [↻] 改用主 CDN 单线程下载")
+                for pf in part_files:
+                    pf.unlink(missing_ok=True)
+                return None
+
+        elif failed_ranges:
+            for pf in part_files:
+                pf.unlink(missing_ok=True)
+            return None
+
+        # 合并分块
+        try:
+            with open(tmp_path, "wb") as out:
+                for pf in part_files:
+                    with open(pf, "rb") as inp:
+                        while True:
+                            buf = inp.read(1024 * 1024)
+                            if not buf:
+                                break
+                            out.write(buf)
+                    pf.unlink()
+            tmp_path.replace(filepath)
+        except (IOError, OSError) as e:
+            print(f"[!] 合并分块失败: {e}")
+            tmp_path.unlink(missing_ok=True)
+            for pf in part_files:
+                pf.unlink(missing_ok=True)
+            return None
+
+        print(f"[+] 已下载: {filename} ({total_mb:.1f} MB, {self.workers} 线程)")
+        return filepath
+
+    def _download_range(
+        self,
+        url: str,
+        start: int,
+        end: int,
+        part_file: Path,
+        tracker: _ProgressTracker,
+    ) -> bool:
+        """下载文件的指定字节范围，带重试和断点续传"""
+        expected_size = end - start + 1
+        max_retries = 10
+
+        for attempt in range(max_retries):
+            # 检查已有 part_file 大小，支持断点续传
+            resume_start = start
+            if part_file.exists():
+                existing_size = part_file.stat().st_size
+                if existing_size > 0 and existing_size < expected_size:
+                    resume_start = start + existing_size
+                elif existing_size >= expected_size:
+                    tracker.add(expected_size)
+                    return True
+
+            headers = {"User-Agent": _UA, "Range": f"bytes={resume_start}-{end}"}
+            try:
+                resp = requests.get(url, headers=headers, stream=True, timeout=120)
+                if resp.status_code != 206:
+                    if attempt == 0:
+                        print(f"[!] 分块 {start}-{end}: HTTP {resp.status_code}")
+                    resp.close()
+                    continue
+
+                cl = int(resp.headers.get("content-length", 0))
+                expected_chunk = end - resume_start + 1
+                if cl != expected_chunk:
+                    resp.close()
+                    if attempt == 0:
+                        print(f"[!] 分块 {start}-{end}: CL={cl} != {expected_chunk}")
+                    continue
+
+                mode = "ab" if resume_start > start else "wb"
+                with open(part_file, mode) as f:
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        f.write(chunk)
+                        tracker.add(len(chunk))
+
+                # 验证最终文件大小
+                actual_size = part_file.stat().st_size
+                if actual_size >= expected_size:
+                    return True
+
+                # 大小不足，重试补齐
+                if attempt < max_retries - 1:
+                    print(f"  [↻] 分块 {start}-{end}: {actual_size}/{expected_size}，重试")
+                    continue
+
+            except requests.RequestException as e:
+                if attempt < max_retries - 1:
+                    print(f"  [↻] 分块 {start}-{end}: 连接中断，重试 ({attempt+1}/{max_retries})")
+                    continue
+                print(f"[!] 分块 {start}-{end} 失败: {e}")
+                break
+
+        part_file.unlink(missing_ok=True)
+        return False
+
     # ── 批量下载 ──────────────────────────────────────
 
     def batch_download_book(
@@ -312,7 +551,7 @@ class KmoeCrawler:
         max_vols: int = 0,
         default_output: Path | None = None,
     ) -> None:
-        """批量下载一本漫画，支持多账号轮换"""
+        """批量下载一本漫画，支持多账号轮换和并行下载"""
         if save_dir is None:
             save_dir = default_output or Path("~/Downloads").expanduser()
 
@@ -334,45 +573,83 @@ class KmoeCrawler:
         print(f"\n[*] 开始下载 {len(volumes)} 卷 -> {book_dir}")
         print(f"    类型: {'mobi' if file_type == 1 else 'epub'} (epub 优先)")
 
-        success = 0
-        fail = 0
-        for vol in volumes:
-            if self._download_volume(vol, detail, book_dir, file_type, book_url):
-                success += 1
-            else:
-                fail += 1
+        # 阶段 1：顺序获取下载 URL（需要认证 session）
+        tasks = self._collect_download_tasks(volumes, detail, file_type, book_url, book_dir)
+
+        if not tasks:
+            print("[!] 无可下载的卷")
+            return
+
+        # 阶段 2：下载文件
+        if self.workers > 1 and len(tasks) > 1:
+            success, fail = self._parallel_download(tasks, book_dir)
+        else:
+            success, fail = 0, 0
+            for cdn_url, filename, _vol, backup_url in tasks:
+                result = self.download_file(
+                    cdn_url, book_dir, filename=filename, backup_url=backup_url
+                )
+                if result:
+                    success += 1
+                else:
+                    fail += 1
 
         print(f"\n[*] 完成: {success} 成功, {fail} 失败")
 
-    def _download_volume(
-        self, vol: dict, detail: dict, book_dir: Path, file_type: int, book_url: str
-    ) -> bool:
-        max_attempts = self._account_manager.account_count if self._account_manager else 1
+    def _collect_download_tasks(
+        self,
+        volumes: list[dict],
+        detail: dict,
+        file_type: int,
+        book_url: str,
+        book_dir: Path,
+    ) -> list[tuple[str, str, dict, str | None]]:
+        """顺序获取每卷的 CDN 下载 URL，处理账号轮换"""
+        tasks: list[tuple[str, str, dict, str | None]] = []
+        for vol in volumes:
+            dl_info = self._resolve_download_info(vol, detail, file_type, book_url)
+            if dl_info and dl_info["url"]:
+                filename = self._make_filename(detail["title"], vol["name"], dl_info["ext"])
+                backup = dl_info.get("backup_url")
+                tasks.append((dl_info["url"], filename, vol, backup))
+            else:
+                print(f"[-] 跳过: {vol['name']}")
+        return tasks
 
+    def _resolve_download_info(
+        self, vol: dict, detail: dict, file_type: int, book_url: str
+    ) -> dict | None:
+        """获取单卷下载 URL，支持账号轮换"""
+        max_attempts = self._account_manager.account_count if self._account_manager else 1
         for attempt in range(max_attempts):
             try:
-                return self._try_download_volume(vol, detail, book_dir, file_type)
+                return self._try_resolve(vol, detail, file_type)
             except AccountExhaustedError as e:
                 print(f"[!] 账号不可用: {e}")
                 if not self._account_manager:
-                    return False
+                    return None
                 new_cookies = self._account_manager.switch_account(str(e))
                 if new_cookies:
                     self.replace_session(new_cookies)
                     detail = self.get_book_detail(book_url) or detail
                     continue
                 else:
-                    print("[!] 所有账号已耗尽，停止下载")
-                    return False
-
+                    print("[!] 所有账号已耗尽")
+                    return None
         print(f"[-] 所有账号均失败: {vol['name']}")
-        return False
+        return None
 
-    def _try_download_volume(
-        self, vol: dict, detail: dict, book_dir: Path, file_type: int
-    ) -> bool:
-        dl_info = None
+    def _try_resolve(
+        self, vol: dict, detail: dict, file_type: int
+    ) -> dict | None:
+        """尝试获取下载 URL，失败时抛 AccountExhaustedError
+
+        同时获取备用 CDN URL（支持 Range）用于分块下载。
+        主 CDN (dl.kmoe9.com) 返回 206 但忽略 Range，
+        备用 CDN (free2.mxomo.com) 真正支持 Range。
+        """
         ext = "epub" if file_type == 2 else "mobi"
+        dl_info = None
 
         if file_type == 2:
             dl_info = self.get_download_url(detail["bookid"], vol["volid"], file_type=2)
@@ -384,12 +661,103 @@ class KmoeCrawler:
             dl_info = self.get_download_url(detail["bookid"], vol["volid"], file_type=1)
 
         if dl_info and dl_info["url"]:
-            filename = self._make_filename(detail["title"], vol["name"], ext)
-            result = self.download_file(dl_info["url"], book_dir, filename=filename)
-            return result is not None
-        else:
-            print(f"[-] 跳过: {vol['name']}")
-            return False
+            result = {"url": dl_info["url"], "ext": ext}
+            # 尝试获取备用 CDN URL（用于分块下载）
+            if self.workers > 1:
+                backup = self._get_backup_cdn_url(detail["bookid"], vol["volid"], file_type)
+                if backup:
+                    result["backup_url"] = backup
+            return result
+        return None
+
+    def _get_backup_cdn_url(
+        self, bookid: str, volid: str, file_type: int
+    ) -> str | None:
+        """通过 /dl/ 路径获取备用 CDN URL（支持 Range）"""
+        # tabdisp: 1=mobi, 2=epub; line=1 → 备用 CDN
+        tabdisp = 2 if file_type == 2 else 1
+        dl_path = f"{BASE_URL}/dl/{bookid}/{volid}/1/{tabdisp}/0/"
+        try:
+            resp = self.session.get(
+                dl_path, timeout=self.timeout, allow_redirects=False
+            )
+            if resp.status_code == 302:
+                backup_url = resp.headers.get("location", "")
+                if "mxomo.com" in backup_url:
+                    self.request_count += 1
+                    return backup_url
+        except requests.RequestException:
+            pass
+        return None
+
+    def _parallel_download(
+        self, tasks: list[tuple[str, str, dict, str | None]], book_dir: Path
+    ) -> tuple[int, int]:
+        """并行下载多个文件（CDN URL 无需认证，线程安全）"""
+        print(f"[*] 并行下载: {len(tasks)} 卷, {self.workers} 线程")
+
+        success = 0
+        fail = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.workers) as pool:
+            futures = {}
+            for cdn_url, filename, vol, backup_url in tasks:
+                f = pool.submit(self._download_from_cdn, cdn_url, book_dir, filename, backup_url)
+                futures[f] = (filename, vol)
+
+            for f in concurrent.futures.as_completed(futures):
+                filename, vol = futures[f]
+                try:
+                    result = f.result()
+                    if result:
+                        success += 1
+                    else:
+                        fail += 1
+                except Exception as e:
+                    print(f"[!] 下载异常 {filename}: {e}")
+                    fail += 1
+
+        return success, fail
+
+    def _download_from_cdn(
+        self, url: str, save_dir: Path, filename: str,
+        backup_url: str | None = None,
+    ) -> Path | None:
+        """从 CDN 下载单个文件（不使用 session，线程安全）"""
+        resp = requests.get(
+            url, headers={"User-Agent": _UA}, stream=True, timeout=180
+        )
+        if resp.status_code != 200:
+            print(f"[!] 下载失败: {filename} HTTP {resp.status_code}")
+            return None
+
+        save_dir.mkdir(parents=True, exist_ok=True)
+        filepath = save_dir / filename
+        total_size = int(resp.headers.get("content-length", 0))
+        tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+
+        try:
+            with open(tmp_path, "wb") as f:
+                downloaded = 0
+                last_time = time.monotonic()
+                total_mb = total_size / 1024 / 1024
+                for chunk in resp.iter_content(chunk_size=65536):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.monotonic()
+                    if total_size > 0 and now - last_time >= 10.0:
+                        dl_mb = downloaded / 1024 / 1024
+                        pct = downloaded * 100 // total_size
+                        print(f"  [↓] {filename}: {pct}% ({dl_mb:.1f}/{total_mb:.1f} MB)")
+                        last_time = now
+            tmp_path.replace(filepath)
+        except (IOError, OSError) as e:
+            print(f"[!] 写入失败: {filename}: {e}")
+            tmp_path.unlink(missing_ok=True)
+            return None
+
+        size_mb = total_size / 1024 / 1024
+        print(f"[+] 已下载: {filename} ({size_mb:.1f} MB)")
+        return filepath
 
     @staticmethod
     def _make_filename(book_title: str, vol_name: str, ext: str) -> str:

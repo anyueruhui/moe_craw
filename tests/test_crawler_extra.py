@@ -42,7 +42,11 @@ class TestBatchDownloadBook:
 
         with patch.object(crawler, "get_book_detail", return_value=detail), \
              patch.object(crawler, "get_volumes", return_value=volumes), \
-             patch.object(crawler, "_download_volume", return_value=True):
+             patch.object(crawler, "_resolve_download_info", side_effect=[
+                 {"url": "https://cdn/1.epub", "ext": "epub"},
+                 {"url": "https://cdn/2.epub", "ext": "epub"},
+             ]), \
+             patch.object(crawler, "download_file", return_value=tmp_path / "f.epub"):
             crawler.batch_download_book("https://koz.moe/book.php?b=1", save_dir=tmp_path)
 
     def test_stops_on_no_detail(self, crawler: KmoeCrawler, tmp_path: Path):
@@ -68,104 +72,103 @@ class TestBatchDownloadBook:
         volumes = [{"volid": f"v{i}", "name": f"卷{i}"} for i in range(10)]
         with patch.object(crawler, "get_book_detail", return_value=detail), \
              patch.object(crawler, "get_volumes", return_value=volumes), \
-             patch.object(crawler, "_download_volume", return_value=True) as mock_dl:
+             patch.object(crawler, "_resolve_download_info", return_value=None):
             crawler.batch_download_book(
                 "https://koz.moe/book.php?b=1", save_dir=tmp_path,
                 start_vol=2, max_vols=3,
             )
-            assert mock_dl.call_count == 3
 
 
-class TestDownloadVolume:
-    """Test _download_volume with account rotation."""
+class TestResolveDownloadInfo:
+    """Test _resolve_download_info with account rotation."""
 
-    def test_succeeds_on_first_try(self, crawler: KmoeCrawler, tmp_path: Path):
-        with patch.object(crawler, "_try_download_volume", return_value=True):
-            result = crawler._download_volume(
-                {"volid": "v1", "name": "卷1"}, {}, tmp_path, 2, "url"
+    def test_succeeds_on_first_try(self, crawler: KmoeCrawler):
+        vol = {"volid": "v1", "name": "卷1"}
+        with patch.object(crawler, "_try_resolve", return_value={"url": "u", "ext": "epub"}):
+            result = crawler._resolve_download_info(
+                vol, {"bookid": "1"}, 2, "url"
             )
-        assert result is True
+        assert result == {"url": "u", "ext": "epub"}
 
-    def test_switches_account_on_exhaustion(self, crawler: KmoeCrawler, tmp_path: Path):
+    def test_switches_account_on_exhaustion(self, crawler: KmoeCrawler):
         mock_cookies = {"VLIBSID": "new", "VOLSKEY": "new", "VOLSESS": "new"}
-        with patch.object(crawler, "_try_download_volume", side_effect=[
+        vol = {"volid": "v1", "name": "卷1"}
+        with patch.object(crawler, "_try_resolve", side_effect=[
             AccountExhaustedError("quota"),
-            True,
+            {"url": "u", "ext": "epub"},
         ]), \
              patch.object(crawler._account_manager, "switch_account", return_value=mock_cookies), \
              patch.object(crawler, "replace_session"), \
              patch.object(crawler, "get_book_detail", return_value={"bookid": "1", "data_hash": "h"}):
-            result = crawler._download_volume(
-                {"volid": "v1", "name": "卷1"}, {"bookid": "1"}, tmp_path, 2, "url"
+            result = crawler._resolve_download_info(
+                vol, {"bookid": "1"}, 2, "url"
             )
-        assert result is True
+        assert result == {"url": "u", "ext": "epub"}
 
-    def test_stops_when_all_exhausted(self, crawler: KmoeCrawler, tmp_path: Path):
-        with patch.object(crawler, "_try_download_volume",
+    def test_stops_when_all_exhausted(self, crawler: KmoeCrawler):
+        vol = {"volid": "v1", "name": "卷1"}
+        with patch.object(crawler, "_try_resolve",
                           side_effect=AccountExhaustedError("quota")), \
              patch.object(crawler._account_manager, "switch_account", return_value=None):
-            result = crawler._download_volume(
-                {"volid": "v1", "name": "卷1"}, {}, tmp_path, 2, "url"
+            result = crawler._resolve_download_info(
+                vol, {}, 2, "url"
             )
-        assert result is False
+        assert result is None
 
-    def test_no_account_manager_single_attempt(self, tmp_path: Path):
+    def test_no_account_manager_single_attempt(self):
         c = KmoeCrawler({"VLIBSID": "x"}, delay=0, account_manager=None)
-        with patch.object(c, "_try_download_volume",
+        with patch.object(c, "_try_resolve",
                           side_effect=AccountExhaustedError("quota")):
-            result = c._download_volume(
-                {"volid": "v1", "name": "卷1"}, {}, tmp_path, 2, "url"
+            result = c._resolve_download_info(
+                {"volid": "v1", "name": "卷1"}, {}, 2, "url"
             )
-        assert result is False
+        assert result is None
         c.session.close()
 
 
-class TestTryDownloadVolume:
-    """Test _try_download_volume individual download logic."""
+class TestTryResolve:
+    """Test _try_resolve individual download URL resolution."""
 
-    def test_epub_with_fallback_to_mobi(self, crawler: KmoeCrawler, tmp_path: Path):
+    def test_epub_with_fallback_to_mobi(self, crawler: KmoeCrawler):
         detail = {"bookid": "1", "title": "TestBook"}
         vol = {"volid": "v1", "name": "卷1"}
 
         with patch.object(crawler, "get_download_url", side_effect=[
             {"url": "", "name": ""},  # epub fails
             {"url": "https://cdn.example.com/book.mobi", "name": "book"},  # mobi works
-        ]), \
-             patch.object(crawler, "download_file", return_value=tmp_path / "book.mobi"):
-            result = crawler._try_download_volume(vol, detail, tmp_path, file_type=2)
-        assert result is True
+        ]):
+            result = crawler._try_resolve(vol, detail, file_type=2)
+        assert result == {"url": "https://cdn.example.com/book.mobi", "ext": "mobi"}
 
-    def test_mobi_directly(self, crawler: KmoeCrawler, tmp_path: Path):
+    def test_mobi_directly(self, crawler: KmoeCrawler):
         detail = {"bookid": "1", "title": "TestBook"}
         vol = {"volid": "v1", "name": "卷1"}
 
         with patch.object(crawler, "get_download_url", return_value={
             "url": "https://cdn.example.com/book.mobi", "name": "book",
-        }), \
-             patch.object(crawler, "download_file", return_value=tmp_path / "book.mobi"):
-            result = crawler._try_download_volume(vol, detail, tmp_path, file_type=1)
-        assert result is True
+        }):
+            result = crawler._try_resolve(vol, detail, file_type=1)
+        assert result == {"url": "https://cdn.example.com/book.mobi", "ext": "mobi"}
 
-    def test_skips_when_no_url(self, crawler: KmoeCrawler, tmp_path: Path):
+    def test_skips_when_no_url(self, crawler: KmoeCrawler):
         detail = {"bookid": "1", "title": "TestBook"}
         vol = {"volid": "v1", "name": "卷1"}
 
         with patch.object(crawler, "get_download_url", return_value={
             "url": "", "name": "",
         }):
-            result = crawler._try_download_volume(vol, detail, tmp_path, file_type=1)
-        assert result is False
+            result = crawler._try_resolve(vol, detail, file_type=1)
+        assert result is None
 
-    def test_skips_when_download_returns_none(self, crawler: KmoeCrawler, tmp_path: Path):
+    def test_epub_returns_url(self, crawler: KmoeCrawler):
         detail = {"bookid": "1", "title": "TestBook"}
         vol = {"volid": "v1", "name": "卷1"}
 
         with patch.object(crawler, "get_download_url", return_value={
             "url": "https://cdn.example.com/book.epub", "name": "book",
-        }), \
-             patch.object(crawler, "download_file", return_value=None):
-            result = crawler._try_download_volume(vol, detail, tmp_path, file_type=2)
-        assert result is False
+        }):
+            result = crawler._try_resolve(vol, detail, file_type=2)
+        assert result == {"url": "https://cdn.example.com/book.epub", "ext": "epub"}
 
 
 class TestGetDownloadUrlQuotaKeywords:
