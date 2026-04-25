@@ -60,12 +60,12 @@ class KmoeCrawler:
                 self.security_notes.append(
                     f"Session cookie {cookie_name} was rotated by server"
                 )
-        self._sync_config()
+        self._sync_cookies_to_state()
         time.sleep(self.delay)
         return resp
 
-    def _sync_config(self):
-        """将当前 session cookie 写入 state.json"""
+    def _sync_cookies_to_state(self):
+        """将当前 session cookie 同步到内存中的 state"""
         state = _load_state()
         accounts = state.setdefault("accounts", [])
         idx = state.get("active_account", 0)
@@ -352,7 +352,7 @@ class KmoeCrawler:
         self, vol: dict, detail: dict, book_dir: Path, file_type: int, book_url: str
     ) -> bool:
         """下载单个卷，失败时尝试切换账号重试"""
-        max_attempts = len(self.cfg.get("accounts", [])) + 1
+        max_attempts = len(self.cfg.get("accounts", []))
 
         for attempt in range(max_attempts):
             try:
@@ -362,9 +362,6 @@ class KmoeCrawler:
                 new_cookies = switch_account(self.cfg, str(e))
                 if new_cookies:
                     self.replace_session(new_cookies)
-                    account = self.cfg["accounts"][self.cfg["active_account"]]
-                    print(f"[*] 已切换到账号: {account['email']}")
-                    # 刷新详情页以更新 detail（quota/hash 可能不同）
                     detail = self.get_book_detail(book_url) or detail
                     continue
                 else:
@@ -450,22 +447,28 @@ def security_report(crawler: KmoeCrawler, elapsed: float):
     print("=" * 60)
 
 
-# ── 状态管理 ──────────────────────────────────────────
+# ── 状态管理（内存缓存 + 按需写盘） ──────────────────
+
+
+_state_cache: dict | None = None
 
 
 def _load_state() -> dict:
-    """加载运行时状态（cookies, exhausted 标记等）"""
-    if STATE_FILE.exists():
-        try:
-            with open(STATE_FILE) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
+    """获取运行时状态（首次从磁盘加载，之后从内存缓存读取）"""
+    global _state_cache
+    if _state_cache is None:
+        _state_cache = {}
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE) as f:
+                    _state_cache = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+    return _state_cache
 
 
 def _save_state(state: dict) -> None:
-    """持久化运行时状态到 state.json"""
+    """持久化状态到磁盘（原子写入）"""
     tmp = STATE_FILE.with_suffix('.tmp')
     with open(tmp, "w") as f:
         json.dump(state, f, indent=4)
@@ -480,8 +483,16 @@ def load_config() -> dict:
     if not CONFIG_FILE.exists():
         return {}
 
-    with open(CONFIG_FILE) as f:
-        cfg = json.load(f)
+    try:
+        with open(CONFIG_FILE) as f:
+            cfg = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"[!] 配置文件 JSON 语法错误: {e}")
+        return {}
+    except OSError as e:
+        print(f"[!] 无法读取配置文件: {e}")
+        return {}
+
     print(f"[*] 已加载配置: {CONFIG_FILE}")
 
     # 兼容旧格式：顶层 email/passwd → accounts[0]
