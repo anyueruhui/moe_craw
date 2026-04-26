@@ -290,6 +290,7 @@ class KmoeCrawler:
         start_vol: int = 0,
         max_vols: int = 0,
         default_output: Path | None = None,
+        category: str | None = None,
     ) -> None:
         """批量下载一本漫画，支持多账号轮换和并行下载"""
         if save_dir is None:
@@ -304,6 +305,14 @@ class KmoeCrawler:
         if not volumes:
             print("[!] 无卷数据")
             return
+
+        if category:
+            volumes = [v for v in volumes if v.get("category") == category]
+            if not volumes:
+                all_vols = self.get_volumes(detail["data_hash"])
+                cats = sorted(set(v.get("category", "") for v in all_vols))
+                print(f"[!] 无「{category}」类条目，可选分类: {', '.join(cats)}")
+                return
 
         volumes = volumes[start_vol:]
         if max_vols > 0:

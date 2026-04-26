@@ -42,6 +42,7 @@ def _build_parser(cfg: dict) -> argparse.ArgumentParser:
     parser.add_argument("--type", choices=["mobi", "epub"], default=cfg.get("type", "epub"))
     parser.add_argument("--start", type=int, default=cfg.get("start", 0), help="从第 N 卷开始")
     parser.add_argument("--max", type=int, default=cfg.get("max", 0), help="最多下载 N 卷 (0=全部)")
+    parser.add_argument("--category", help="按分类过滤 (單行本/話/番外篇)")
     parser.add_argument("--delay", type=float, default=cfg.get("delay", 1.0), help="请求间隔(秒)")
     parser.add_argument("--output", "-o", default=cfg.get("output", DEFAULT_OUTPUT))
     parser.add_argument("--login", action="store_true", help="强制重新登录")
@@ -86,6 +87,8 @@ def _resolve_cookies(
 def _dispatch(args: argparse.Namespace, crawler: KmoeCrawler, file_type: int) -> None:
     output = Path(args.output).expanduser()
 
+    category = getattr(args, "category", None)
+
     if args.search:
         results = crawler.search(args.search)
         if args.download_all and results:
@@ -97,6 +100,7 @@ def _dispatch(args: argparse.Namespace, crawler: KmoeCrawler, file_type: int) ->
                     file_type=file_type,
                     start_vol=args.start,
                     max_vols=args.max,
+                    category=category,
                 )
         elif args.download and results:
             crawler.batch_download_book(
@@ -105,6 +109,7 @@ def _dispatch(args: argparse.Namespace, crawler: KmoeCrawler, file_type: int) ->
                 file_type=file_type,
                 start_vol=args.start,
                 max_vols=args.max,
+                category=category,
             )
         elif results:
             print(f"\n  添加 -d 下载第一个结果，--download-all 下载全部")
@@ -119,6 +124,7 @@ def _dispatch(args: argparse.Namespace, crawler: KmoeCrawler, file_type: int) ->
                 file_type=file_type,
                 start_vol=args.start,
                 max_vols=args.max,
+                category=category,
             )
         else:
             _show_book_info(crawler, args.book_url)
@@ -136,10 +142,17 @@ def _show_book_info(crawler: KmoeCrawler, book_url: str) -> None:
     if detail and detail["data_hash"]:
         volumes = crawler.get_volumes(detail["data_hash"])
         if volumes:
-            print(f"\n  添加 -d 下载此漫画")
-            print(f"    共 {len(volumes)} 卷")
-            for i, v in enumerate(volumes):
-                print(f"    卷 {i + 1:02d} ({v.get('pages', '?')}p, {v.get('size_mobi', '?')}MB)")
+            cats: dict[str, list[dict]] = {}
+            for v in volumes:
+                cat = v.get("category", "其他")
+                cats.setdefault(cat, []).append(v)
+
+            print(f"\n  添加 -d 下载此漫画，--category 按分类过滤")
+            print(f"    共 {len(volumes)} 个条目")
+            for cat, cat_vols in cats.items():
+                print(f"\n    【{cat}】({len(cat_vols)} 个)")
+                for i, v in enumerate(cat_vols):
+                    print(f"      {i + 1:02d}. {v.get('name', '?')} ({v.get('pages', '?')}p, {v.get('size_mobi', '?')}MB)")
         else:
             print("[!] 无卷数据")
     else:
