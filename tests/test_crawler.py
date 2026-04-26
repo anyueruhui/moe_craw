@@ -10,8 +10,8 @@ import requests
 from kmoe.crawler import (
     AccountExhaustedError,
     KmoeCrawler,
-    _extract_filename,
 )
+from kmoe.downloader import extract_filename
 
 
 @pytest.fixture
@@ -52,22 +52,22 @@ class TestExtractFilename:
     def test_from_content_disposition_utf8(self):
         resp = MagicMock()
         resp.headers = {"Content-Disposition": "attachment; filename*=UTF-8''test%20file.epub"}
-        assert _extract_filename(resp, "https://example.com/") == "test file.epub"
+        assert extract_filename(resp, "https://example.com/") == "test file.epub"
 
     def test_from_content_disposition_ascii(self):
         resp = MagicMock()
         resp.headers = {"Content-Disposition": 'attachment; filename="book.epub"'}
-        assert _extract_filename(resp, "https://example.com/") == "book.epub"
+        assert extract_filename(resp, "https://example.com/") == "book.epub"
 
     def test_from_url_path(self):
         resp = MagicMock()
         resp.headers = {}
-        assert _extract_filename(resp, "https://cdn.example.com/files/book.epub?token=abc") == "book.epub"
+        assert extract_filename(resp, "https://cdn.example.com/files/book.epub?token=abc") == "book.epub"
 
     def test_fallback_to_download(self):
         resp = MagicMock()
         resp.headers = {}
-        assert _extract_filename(resp, "https://example.com/") == "download"
+        assert extract_filename(resp, "https://example.com/") == "download"
 
 
 class TestContextManager:
