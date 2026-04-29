@@ -50,12 +50,17 @@ digraph kmoe {
 | 漫画名 | 《烙印战士》 | 必填 |
 | 卷数范围 | 第5卷、1-10卷、全部 | 全部 |
 | 格式 | mobi / epub | epub（优先），无 epub 时回退 mobi |
+| 分类 | 單行本/話/番外篇 | 全部分类 |
 
 识别规则：
 - "第 N 卷" → 单卷 `--start N-1 --max 1`
 - "第 M 到 N 卷" → 范围 `--start M-1 --max N-M+1`
 - "全部" / 不指定 → `--start 0 --max 0`
 - "epub" → `--type epub`
+- "只下载單行本" / "單行本分类" → `--category 單行本`
+- "只要话" → `--category 話`
+- "番外篇" → `--category 番外篇`
+- 不指定分类 → 不加 `--category`
 
 ### 2. 搜索
 
@@ -104,7 +109,7 @@ source $MOE_CRAW_DIR/.venv/bin/activate
 python3 $MOE_CRAW_DIR/kmoe_crawler.py --book-url "BOOK_URL"
 ```
 
-此命令仅展示书籍信息和卷列表，**不会触发下载**。用于确认总卷数和卷名后再决定下载范围。
+此命令仅展示书籍信息和卷列表（按分类分组显示），**不会触发下载**。用于确认总卷数和卷名后再决定下载范围。
 
 > **重要**：`--book-url` 必须配合 `-d` 才会执行下载，单独使用仅为信息查看模式。
 
@@ -119,6 +124,17 @@ python3 $MOE_CRAW_DIR/kmoe_crawler.py \
   --start START --max MAX \
   --delay 0.8
 ```
+
+如需按分类下载（如只下载單行本）：
+
+```bash
+python3 $MOE_CRAW_DIR/kmoe_crawler.py \
+  --book-url "BOOK_URL" \
+  -d \
+  --category 單行本
+```
+
+> **性能提示**：默认使用 20 线程并行下载。可通过 `--workers N` 调整（`--workers 1` 为单线程）。
 
 ### 7. 报告结果
 

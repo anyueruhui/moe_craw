@@ -108,7 +108,7 @@ class KmoeCrawler:
     # ── 搜索 ──────────────────────────────────────────
 
     def search(self, keyword: str) -> list[dict]:
-        """搜索漫画，用两步提取法解析 disp_divinfo JS 调用"""
+        """搜索漫画，解析页面中的 disp_divinfo JS 调用"""
         resp = self._get(f"{BASE_URL}/list.php", params={"s": keyword})
         if resp.status_code != 200:
             print(f"[!] 搜索失败: HTTP {resp.status_code}")
@@ -426,8 +426,8 @@ class KmoeCrawler:
                 if "mxomo.com" in backup_url:
                     self.request_count += 1
                     return backup_url
-        except requests.RequestException:
-            pass
+        except requests.RequestException as e:
+            print(f"[!] 备用 CDN 获取失败: {e}")
         return None
 
     @staticmethod

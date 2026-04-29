@@ -31,15 +31,20 @@ class AccountManager:
                 try:
                     with open(self._state_file) as f:
                         self._state_cache = json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    pass
+                except json.JSONDecodeError as e:
+                    print(f"[!] state.json 解析失败，将使用空状态: {e}")
+                except OSError as e:
+                    print(f"[!] state.json 读取失败: {e}")
         return self._state_cache
 
     def _save_state(self, state: dict) -> None:
-        tmp = self._state_file.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(state, f, indent=4)
-        tmp.replace(self._state_file)
+        try:
+            tmp = self._state_file.with_suffix(".tmp")
+            with open(tmp, "w") as f:
+                json.dump(state, f, indent=4)
+            tmp.replace(self._state_file)
+        except OSError as e:
+            print(f"[!] 状态保存失败 (不影响下载): {e}")
 
     # ── 公开接口 ──────────────────────────────────────
 
@@ -108,12 +113,12 @@ class AccountManager:
         if not cookies["VLIBSID"]:
             try:
                 s.get(f"{BASE_URL}/my.php", timeout=30)
-            except requests.RequestException:
-                pass
+            except requests.RequestException as e:
+                print(f"[!] 登录后 cookie 刷新请求失败: {e}")
             cookies = _extract_cookies(s)
 
         if not cookies["VLIBSID"]:
-            print(f"[!] 登录失败: HTTP {resp.status_code}")
+            print("[!] 登录成功但未能获取 VLIBSID cookie")
             return None
 
         print(f"[+] 登录成功: VLIBSID={cookies['VLIBSID'][:20]}...")

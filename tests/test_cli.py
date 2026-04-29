@@ -202,12 +202,15 @@ class TestShowBookInfo:
             "data_hash": "h", "title": "Test"
         }
         crawler.get_volumes.return_value = [
-            {"pages": "200", "size_mobi": "45"},
-            {"pages": "180", "size_mobi": "40"},
+            {"name": "卷1", "pages": "200", "size_mobi": "45", "category": "單行本"},
+            {"name": "卷2", "pages": "180", "size_mobi": "40", "category": "話"},
         ]
         _show_book_info(crawler, "https://example.com/b1")
         output = capsys.readouterr().out
-        assert "共 2 卷" in output
+        assert "共 2 个条目" in output
+        assert "【單行本】" in output
+        assert "【話】" in output
+        assert "--category" in output
 
     def test_shows_no_volumes(self, capsys):
         crawler = MagicMock()

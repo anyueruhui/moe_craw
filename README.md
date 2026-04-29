@@ -104,6 +104,8 @@ python kmoe_crawler.py -s "漫画" -d -o ~/Documents/manga
 | `--type` | | 格式：`epub`（默认）或 `mobi` |
 | `--start` | | 从第 N 卷开始（0-based） |
 | `--max` | | 最多下载 N 卷（0=全部） |
+| `--category` | | 按分类过滤（單行本/話/番外篇等） |
+| `--workers` | | 分块下载线程数（默认 20，1=单线程） |
 | `--delay` | | 请求间隔秒数（默认 1.0） |
 | `--output` | `-o` | 下载保存目录 |
 | `--login` | | 强制重新登录 |
@@ -153,7 +155,14 @@ Skill 会自动：搜索 → 筛选中文版优先 → 多结果让你选择 →
 
 ```
 moe_craw/
-├── kmoe_crawler.py      # 主脚本
+├── kmoe_crawler.py       # 入口脚本（调用 kmoe.cli）
+├── kmoe/
+│   ├── cli.py            # CLI 参数解析与主流程
+│   ├── crawler.py        # 核心爬虫逻辑：搜索、详情、下载 URL 解析
+│   ├── downloader.py     # 多线程分块下载 & 单线程下载
+│   ├── auth.py           # 账号管理与自动登录
+│   └── config.py         # 配置加载 & 环境变量支持
+├── tests/                # 单元测试
 ├── config.example.json   # 配置示例
 ├── config.json           # 用户配置（gitignore，不提交）
 ├── state.json            # 运行时状态（gitignore，自动管理）
@@ -161,6 +170,18 @@ moe_craw/
 ├── requirements.txt      # Python 依赖
 └── .gitignore
 ```
+
+### 环境变量
+
+除了 `config.json`，还可以通过环境变量配置账号：
+
+```bash
+export KMOE_EMAIL="user@example.com"
+export KMOE_PASSWORD="your_password"
+python kmoe_crawler.py -s "漫画" -d
+```
+
+环境变量账号会自动追加到 `config.json` 中的账号列表（不重复添加）。
 
 ## 注意事项
 

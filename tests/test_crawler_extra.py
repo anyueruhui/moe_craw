@@ -190,3 +190,61 @@ class TestGetDownloadUrlQuotaKeywords:
             with patch.object(crawler, "_sync_cookies"):
                 with pytest.raises(AccountExhaustedError):
                     crawler.get_download_url("b1", "v1")
+
+
+class TestBatchDownloadCategoryFilter:
+    """Test --category filter in batch_download_book."""
+
+    def test_filters_volumes_by_category(self, crawler: KmoeCrawler, tmp_path: Path):
+        detail = {
+            "url": "x", "title": "T", "bookid": "1", "data_hash": "h", "uin": "0",
+        }
+        volumes = [
+            {"volid": "v1", "name": "第1卷", "category": "單行本"},
+            {"volid": "v2", "name": "第2卷", "category": "話"},
+            {"volid": "v3", "name": "第3卷", "category": "單行本"},
+        ]
+        with patch.object(crawler, "get_book_detail", return_value=detail), \
+             patch.object(crawler, "get_volumes", return_value=volumes), \
+             patch.object(crawler, "_resolve_download_info", return_value=None) as mock_resolve:
+            crawler.batch_download_book(
+                "https://koz.moe/book.php?b=1", save_dir=tmp_path,
+                category="單行本",
+            )
+        # Should only process v1 and v3 (category 單行本)
+        assert mock_resolve.call_count == 2
+
+    def test_shows_available_categories_when_no_match(self, crawler: KmoeCrawler, tmp_path: Path, capsys):
+        detail = {
+            "url": "x", "title": "T", "bookid": "1", "data_hash": "h", "uin": "0",
+        }
+        volumes = [
+            {"volid": "v1", "name": "第1卷", "category": "單行本"},
+            {"volid": "v2", "name": "SP", "category": "番外篇"},
+        ]
+        with patch.object(crawler, "get_book_detail", return_value=detail), \
+             patch.object(crawler, "get_volumes", return_value=volumes):
+            crawler.batch_download_book(
+                "https://koz.moe/book.php?b=1", save_dir=tmp_path,
+                category="話",
+            )
+        output = capsys.readouterr().out
+        assert "單行本" in output
+        assert "番外篇" in output
+
+    def test_no_category_passes_all_volumes(self, crawler: KmoeCrawler, tmp_path: Path):
+        detail = {
+            "url": "x", "title": "T", "bookid": "1", "data_hash": "h", "uin": "0",
+        }
+        volumes = [
+            {"volid": "v1", "name": "卷1", "category": "單行本"},
+            {"volid": "v2", "name": "卷2", "category": "話"},
+        ]
+        with patch.object(crawler, "get_book_detail", return_value=detail), \
+             patch.object(crawler, "get_volumes", return_value=volumes), \
+             patch.object(crawler, "_resolve_download_info", return_value=None) as mock_resolve:
+            crawler.batch_download_book(
+                "https://koz.moe/book.php?b=1", save_dir=tmp_path,
+                category=None,
+            )
+        assert mock_resolve.call_count == 2

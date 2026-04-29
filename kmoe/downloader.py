@@ -117,7 +117,8 @@ def try_chunked_download(
             timeout=timeout,
             allow_redirects=True,
         )
-    except requests.RequestException:
+    except requests.RequestException as e:
+        print(f"[!] CDN Range 探测失败，将使用单线程: {e}")
         return None
 
     if probe.status_code != 206:
@@ -299,6 +300,8 @@ def parallel_download(
                     fail += 1
             except Exception as e:
                 print(f"[!] 下载异常 {filename}: {e}")
+                import traceback
+                traceback.print_exc()
                 fail += 1
 
     return success, fail
@@ -311,9 +314,14 @@ def download_from_cdn(
     backup_url: str | None = None,
 ) -> Path | None:
     """从 CDN 下载单个文件（不使用 session，线程安全）"""
-    resp = requests.get(
-        url, headers={"User-Agent": _UA}, stream=True, timeout=180
-    )
+    try:
+        resp = requests.get(
+            url, headers={"User-Agent": _UA}, stream=True, timeout=180
+        )
+    except requests.RequestException as e:
+        print(f"[!] CDN 连接失败 {filename}: {e}")
+        return None
+
     if resp.status_code != 200:
         print(f"[!] 下载失败: {filename} HTTP {resp.status_code}")
         return None
